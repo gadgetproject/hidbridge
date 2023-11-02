@@ -1,0 +1,26 @@
+manifest:
+  version: "0.13"
+
+  remotes:
+    - name: zephyrproject
+      url-base: https://github.com/zephyrproject-rtos
+
+  defaults:
+    remote: zephyrproject
+
+  projects:
+    - name: zephyr
+      path: zephyr
+      west-commands: scripts/west-commands.yml
+      revision: main
+
+    - name: hal_nordic
+      path: modules/hal/nordic
+      revision: master
+
+    - name: cmsis
+      path: modules/hal/cmsis
+      revision: master
+
+  self:
+    path: gp
