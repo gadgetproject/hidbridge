@@ -16,9 +16,75 @@
 
 #include <zephyr/kernel.h>
 
+extern int upstream_init(void);
+extern int upstream_emit(char c);
+
+
+static void test_emit_worker(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    static const char msg[] = "Hello, World!\n";
+    static uint8_t index;
+
+    /* Press key */
+    int err = upstream_emit(msg[index]);
+    if (err)
+    {
+        printk("test emit '%c': %d\n", msg[index], err);
+    }
+    else
+    {
+        /* Release key */
+        for(;;)
+        {
+            err = upstream_emit(0);
+            if (!err)
+            {
+                /* Success */
+                break;
+            }
+            else if (err != -EBUSY)
+            {
+                /* Failure */
+                printk("test emit release: %d\n", err);
+                break;
+            }
+
+            /* Retry */
+            k_sleep(K_MSEC(10));
+        }
+    }
+    if (!msg[index++])
+    {
+        /* Wrap back to start of message */
+        index = 0;
+    }
+}
+static struct k_work test_emit;
+
+static void test_timer_handler(struct k_timer *dummy)
+{
+    ARG_UNUSED(dummy);
+
+	k_work_submit(&test_emit);
+}
+static K_TIMER_DEFINE(test_timer, test_timer_handler, NULL);
+
 int main(void)
 {
-    printk("Hello, world!\n");
+    int err;
+
+    err = upstream_init();
+    if (err)
+    {
+        printk("Upstream init failed: %d\n", err);
+        return err;
+    }
+
+    /* Type a recurring string */
+	k_work_init(&test_emit, test_emit_worker);
+	k_timer_start(&test_timer, K_SECONDS(2), K_SECONDS(2));
     return 0;
 }
 
