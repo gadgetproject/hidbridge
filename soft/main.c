@@ -14,11 +14,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "upstream.h"
+
 #include <zephyr/kernel.h>
-
-extern int upstream_init(void);
-extern int upstream_emit(char c);
-
 
 static void test_emit_worker(struct k_work *work)
 {
@@ -28,29 +26,11 @@ static void test_emit_worker(struct k_work *work)
     static uint8_t index;
 
     /* Press key */
-    int err = upstream_emit(msg[index]);
-    if (err)
-    {
-        printk("test emit '%c': %d\n", msg[index], err);
-    }
-    else
+    if (upstream_emit(msg[index]))
     {
         /* Release key */
-        for(;;)
+        while (!upstream_emit(0))
         {
-            err = upstream_emit(0);
-            if (!err)
-            {
-                /* Success */
-                break;
-            }
-            else if (err != -EBUSY)
-            {
-                /* Failure */
-                printk("test emit release: %d\n", err);
-                break;
-            }
-
             /* Retry */
             k_sleep(K_MSEC(10));
         }
@@ -73,18 +53,12 @@ static K_TIMER_DEFINE(test_timer, test_timer_handler, NULL);
 
 int main(void)
 {
-    int err;
-
-    err = upstream_init();
-    if (err)
+    if (upstream_init())
     {
-        printk("Upstream init failed: %d\n", err);
-        return err;
+        /* Type a recurring string */
+        k_work_init(&test_emit, test_emit_worker);
+        k_timer_start(&test_timer, K_SECONDS(2), K_SECONDS(2));
     }
-
-    /* Type a recurring string */
-	k_work_init(&test_emit, test_emit_worker);
-	k_timer_start(&test_timer, K_SECONDS(2), K_SECONDS(2));
     return 0;
 }
 

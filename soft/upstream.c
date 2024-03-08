@@ -14,6 +14,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "upstream.h"
+
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
 
@@ -24,13 +26,14 @@ static bool upstream_configured;
 static const struct device *upstream_hid0;
 static ATOMIC_DEFINE(upstream_flags, 1);
 
-extern int upstream_emit(char c)
+bool upstream_emit(char ascii)
 {
-	int err, wrote;
+    int err, wrote;
 
-	if (!upstream_configured || atomic_test_and_set_bit(upstream_flags, 0))
+    if (!upstream_configured || atomic_test_and_set_bit(upstream_flags, 0))
     {
-        return -EBUSY;
+        /* busy */
+        return false;
     }
 
     /* Trivial US keyboard */
@@ -94,106 +97,107 @@ extern int upstream_emit(char c)
     };
 
     /* ASCII code available? */
-    if (c < 0 || (c && !keymap[(unsigned)c]))
+    if (ascii < 0 || (ascii && !keymap[(unsigned)ascii]))
     {
         return -EINVAL;
     }
 
     /* Generate key press */
     uint8_t report[8] = {0};
-    report[0] = (keymap[(unsigned)c] & 0x80) ? HID_KBD_MODIFIER_LEFT_SHIFT : 0;
-    report[7] = keymap[(unsigned)c] & 0x7f;
+    report[0] = (keymap[(unsigned)ascii] & 0x80) ? HID_KBD_MODIFIER_LEFT_SHIFT : 0;
+    report[7] = keymap[(unsigned)ascii] & 0x7f;
 
     err = hid_int_ep_write(upstream_hid0, report, sizeof(report), &wrote);
     if (err)
     {
         (void)atomic_test_and_clear_bit(upstream_flags, 0);
-        return err;
+        printk("upstream write failed: %d\n", err);
+        return false;
     }
     if (wrote != sizeof(report))
     {
         printk("upstream wrote %u/%u\n", wrote, sizeof(report));
     }
-    return 0;
+    return true;
 }
 
-static void int_in_ready_cb(const struct device *dev)
+static void upstream_int_in_ready_cb(const struct device *dev)
 {
-	ARG_UNUSED(dev);
-	if (!atomic_test_and_clear_bit(upstream_flags, 0))
+    ARG_UNUSED(dev);
+    if (!atomic_test_and_clear_bit(upstream_flags, 0))
     {
-		printk("upstream unexpected ready callback\n");
+        printk("upstream unexpected ready callback\n");
     }
 }
 
-static void protocol_cb(const struct device *dev, uint8_t protocol)
+static void upstream_protocol_cb(const struct device *dev, uint8_t protocol)
 {
-	printk("upstream protocol %u\n", protocol);
+    printk("upstream protocol %u\n", protocol);
 }
 
-static void status_cb(enum usb_dc_status_code status, const uint8_t *param)
+static void upstream_status_cb(enum usb_dc_status_code status, const uint8_t *param)
 {
-	switch (status)
+    switch (status)
     {
-	case USB_DC_RESET:
+    case USB_DC_RESET:
         printk("upstream USB DC reset\n");
-		upstream_configured = false;
+        upstream_configured = false;
         (void)atomic_test_and_clear_bit(upstream_flags, 0);
-		break;
-	case USB_DC_CONFIGURED:
+        break;
+    case USB_DC_CONFIGURED:
         printk("upstream USB DC configured\n");
         upstream_configured = true;
-		break;
+        break;
     case USB_DC_SOF:
         break;
     default:
         printk("upstream USB DC status %u\n", status);
         break;
-	}
+    }
 }
 
-int upstream_init(void)
+bool upstream_init(void)
 {
-	int err;
+    int err;
 
-	upstream_hid0 = device_get_binding("HID_0");
-	if (!upstream_hid0)
+    upstream_hid0 = device_get_binding("HID_0");
+    if (!upstream_hid0)
     {
-		printk("Cannot get USB HID Device\n");
-		return -ENODEV;
-	}
+        printk("Cannot get USB HID Device\n");
+        return false;
+    }
 
     static const uint8_t desc[] = HID_KEYBOARD_REPORT_DESC();
     static const struct hid_ops ops =
     {
-        .int_in_ready = int_in_ready_cb,
-        .protocol_change = protocol_cb,
+        .int_in_ready = upstream_int_in_ready_cb,
+        .protocol_change = upstream_protocol_cb,
     };
 
-	usb_hid_register_device(upstream_hid0, desc, sizeof(desc), &ops);
+    usb_hid_register_device(upstream_hid0, desc, sizeof(desc), &ops);
 
-	atomic_set_bit(upstream_flags, 0);
+    atomic_set_bit(upstream_flags, 0);
 
-	err = usb_hid_set_proto_code(upstream_hid0, HID_BOOT_IFACE_CODE_NONE);
+    err = usb_hid_set_proto_code(upstream_hid0, HID_BOOT_IFACE_CODE_NONE);
     if (err)
     {
-		printk("Failed to set Protocol Code: %u\n", err);
-        return err;
-	}
+        printk("Failed to set Protocol Code: %d\n", err);
+        return false;
+    }
 
-	err = usb_hid_init(upstream_hid0);
-	if (err)
+    err = usb_hid_init(upstream_hid0);
+    if (err)
     {
-		printk("Failed to initialise USB: %u\n", err);
-		return err;
-	}
+        printk("Failed to initialise USB: %d\n", err);
+        return false;
+    }
 
-	err = usb_enable(status_cb);
-	if (err)
+    err = usb_enable(upstream_status_cb);
+    if (err)
     {
-		printk("Failed to enable USB: %u\n", err);
-		return err;
-	}
+        printk("Failed to enable USB: %d\n", err);
+        return false;
+    }
 
-	return 0;
+    return true;
 }
