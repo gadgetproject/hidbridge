@@ -1,6 +1,6 @@
-/*! \file upstream.h
+/*! \file prompt.h
  *
- *  \brief Upstream USB driver API
+ *  \brief User prompt API
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -14,32 +14,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "bridge.h"
+#include <stdbool.h>
 
 /**
- * @brief Initialise Upstream USB driver
+ * @brief Initialise user prompt subsystem
  * @return false on failure
  */
-bool upstream_init(void);
+bool prompt_init(void);
 
 /**
- * @brief Inject a keypress into the stream
- * @param ascii character to press or \0 to release
- * @return false if keypress not queued
+ * @brief Prompt the user to do something
+ * @param [in] msg printf-style message or NULL to remove prompt
  */
-bool upstream_emit(char ascii);
-
-/**
- * @brief Queue a HID report
- * @param report to queue
- * @param length of report in octets
- * @return false if report could not be queued
- */
-bool upstream_report_queue(const uint8_t* report, size_t length);
-
-/**
- * @brief Register a callback for incoming HID reports
- * @param callback on report
- * @return previous callback or NULL if none
- */
-bridge_report upstream_report_callback(bridge_report callback);
+void prompt_message(const char* msg, ...);

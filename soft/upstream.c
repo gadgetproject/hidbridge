@@ -36,7 +36,8 @@ bool upstream_emit(char ascii)
         return false;
     }
 
-    /* Trivial US keyboard */
+    /* Trivial keyboard
+     * - https://source.android.com/docs/core/interaction/input/keyboard-devices */
     static const uint8_t keymap[127] =
     {
         ['\0'] = 0x00,      /* Key release */
@@ -81,6 +82,7 @@ bool upstream_emit(char ascii)
         ['0'] = 0x27,       [')'] = 0xa7,
 
         ['\n'] = 0x28,
+        ['\b'] = 0x2a,
         [' '] = 0x2c,
 
         ['-'] = 0x2d,       ['_'] = 0xad,
@@ -99,7 +101,7 @@ bool upstream_emit(char ascii)
     /* ASCII code available? */
     if (ascii < 0 || (ascii && !keymap[(unsigned)ascii]))
     {
-        return -EINVAL;
+        return false;
     }
 
     /* Generate key press */

@@ -15,5 +15,5 @@
 2. Enter the directory <br>`cd hidbridge`
 3. Initialise **west** project <br>`west init -m https://github.com/gadgetproject/hidbridge`
 4. Fetch subordinate repos <br>`west update`
-5. Build the software <br>`west build -b nrf52840dk_nrf52840 gp/soft`
+5. Build the software <br>`west build -b nrf52840dk/nrf52840 gp/soft`
 6. Flash the software <br>`west flash`

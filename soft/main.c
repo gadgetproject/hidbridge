@@ -14,49 +14,38 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "prompt.h"
 #include "upstream.h"
 
 #include <zephyr/kernel.h>
-
-static void test_emit_worker(struct k_work *work)
-{
-    ARG_UNUSED(work);
-
-    static const char msg[] = "Hello, World!\n";
-    static uint8_t index;
-
-    /* Press key */
-    if (upstream_emit(msg[index]))
-    {
-        /* Release key */
-        while (!upstream_emit(0))
-        {
-            /* Retry */
-            k_sleep(K_MSEC(10));
-        }
-    }
-    if (!msg[index++])
-    {
-        /* Wrap back to start of message */
-        index = 0;
-    }
-}
-static struct k_work test_emit;
 
 static void test_timer_handler(struct k_timer *dummy)
 {
     ARG_UNUSED(dummy);
 
-	k_work_submit(&test_emit);
+    static int count;
+    if (count & 1)
+    {
+        prompt_message("Now you don't");
+    }
+    else
+    {
+        prompt_message("Now you see me #%d", 1+count/2);
+    }
+    count++;
 }
 static K_TIMER_DEFINE(test_timer, test_timer_handler, NULL);
 
 int main(void)
 {
-    if (upstream_init())
+    bool ok = true;
+
+    ok = ok && prompt_init();
+    ok = ok && upstream_init();
+
+    if (ok)
     {
-        /* Type a recurring string */
-        k_work_init(&test_emit, test_emit_worker);
+        /* Type some test prompts */
         k_timer_start(&test_timer, K_SECONDS(2), K_SECONDS(2));
     }
     return 0;
