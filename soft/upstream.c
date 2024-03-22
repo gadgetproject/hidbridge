@@ -21,6 +21,9 @@
 
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/usb/class/usb_hid.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(upstream);
 
 static bool upstream_configured;
 static const struct device *upstream_hid0;
@@ -113,12 +116,12 @@ bool upstream_emit(char ascii)
     if (err)
     {
         (void)atomic_test_and_clear_bit(upstream_flags, 0);
-        printk("upstream write failed: %d\n", err);
+        LOG_ERR("write failed: %d", err);
         return false;
     }
     if (wrote != sizeof(report))
     {
-        printk("upstream wrote %u/%u\n", wrote, sizeof(report));
+        LOG_WRN("wrote %u/%u", wrote, sizeof(report));
     }
     return true;
 }
@@ -128,13 +131,13 @@ static void upstream_int_in_ready_cb(const struct device *dev)
     ARG_UNUSED(dev);
     if (!atomic_test_and_clear_bit(upstream_flags, 0))
     {
-        printk("upstream unexpected ready callback\n");
+        LOG_ERR("unexpected ready callback");
     }
 }
 
 static void upstream_protocol_cb(const struct device *dev, uint8_t protocol)
 {
-    printk("upstream protocol %u\n", protocol);
+    LOG_INF("protocol %u", protocol);
 }
 
 static void upstream_status_cb(enum usb_dc_status_code status, const uint8_t *param)
@@ -142,18 +145,18 @@ static void upstream_status_cb(enum usb_dc_status_code status, const uint8_t *pa
     switch (status)
     {
     case USB_DC_RESET:
-        printk("upstream USB DC reset\n");
+        LOG_INF("USB DC reset");
         upstream_configured = false;
         (void)atomic_test_and_clear_bit(upstream_flags, 0);
         break;
     case USB_DC_CONFIGURED:
-        printk("upstream USB DC configured\n");
+        LOG_INF("USB DC configured");
         upstream_configured = true;
         break;
     case USB_DC_SOF:
         break;
     default:
-        printk("upstream USB DC status %u\n", status);
+        LOG_INF("USB DC status %u", status);
         break;
     }
 }
@@ -165,7 +168,7 @@ bool upstream_init(void)
     upstream_hid0 = device_get_binding("HID_0");
     if (!upstream_hid0)
     {
-        printk("Cannot get USB HID Device\n");
+        LOG_ERR("Cannot get USB HID Device");
         return false;
     }
 
@@ -183,21 +186,21 @@ bool upstream_init(void)
     err = usb_hid_set_proto_code(upstream_hid0, HID_BOOT_IFACE_CODE_NONE);
     if (err)
     {
-        printk("Failed to set Protocol Code: %d\n", err);
+        LOG_ERR("Failed to set Protocol Code: %d", err);
         return false;
     }
 
     err = usb_hid_init(upstream_hid0);
     if (err)
     {
-        printk("Failed to initialise USB: %d\n", err);
+        LOG_ERR("Failed to initialise USB: %d", err);
         return false;
     }
 
     err = usb_enable(upstream_status_cb);
     if (err)
     {
-        printk("Failed to enable USB: %d\n", err);
+        LOG_ERR("Failed to enable USB: %d", err);
         return false;
     }
 

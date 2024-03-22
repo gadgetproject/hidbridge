@@ -23,6 +23,10 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/__assert.h>
+#include <zephyr/shell/shell.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(prompt);
 
 static struct
 {
@@ -120,9 +124,18 @@ void prompt_message(const char* msg, ...)
 
     /* Terminate message */
     prompt.text[written] = '\0';
+    LOG_INF("Prompt: delete %u emit '%s'/%u", prompt.backspace, prompt.text, prompt.length);
 
     /* Start typing */
     k_work_schedule(&prompt.work, PROMPT_KEY_PERIOD);
 
     k_mutex_unlock(&prompt.mutex);
 }
+
+static int cmd_prompt(const struct shell *sh, size_t argc, char **argv)
+{
+    prompt_message(argc > 1 ? argv[1] : NULL);
+    return 0;
+}
+
+SHELL_CMD_ARG_REGISTER(prompt, NULL, "Display user prompt", cmd_prompt, 0, 1);

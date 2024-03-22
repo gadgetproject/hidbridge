@@ -17,36 +17,24 @@
 #include "prompt.h"
 #include "upstream.h"
 
-#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 
-static void test_timer_handler(struct k_timer *dummy)
-{
-    ARG_UNUSED(dummy);
-
-    static int count;
-    if (count & 1)
-    {
-        prompt_message("Now you don't");
-    }
-    else
-    {
-        prompt_message("Now you see me #%d", 1+count/2);
-    }
-    count++;
-}
-static K_TIMER_DEFINE(test_timer, test_timer_handler, NULL);
+LOG_MODULE_REGISTER(main);
 
 int main(void)
 {
-    bool ok = true;
-
-    ok = ok && prompt_init();
-    ok = ok && upstream_init();
-
-    if (ok)
+    LOG_INF("HID Bridge built "__TIME__" "__DATE__);
+    if (!prompt_init())
     {
-        /* Type some test prompts */
-        k_timer_start(&test_timer, K_SECONDS(2), K_SECONDS(2));
+        LOG_ERR("prompt_init() fail");
+    }
+    else if (!upstream_init())
+    {
+        LOG_ERR("upstream_init() fail");
+    }
+    else
+    {
+        LOG_INF("Running");
     }
     return 0;
 }
