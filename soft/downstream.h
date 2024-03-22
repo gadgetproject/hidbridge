@@ -1,6 +1,6 @@
-/*! \file main.c
+/*! \file downstream.h
  *
- *  \brief Entry point
+ *  \brief Downstream BLE driver API
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -14,33 +14,26 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "downstream.h"
-#include "prompt.h"
-#include "upstream.h"
+#include <zephyr/bluetooth/addr.h>
 
-#include <zephyr/logging/log.h>
+/**
+ * @brief Initialise Downstream BLE driver
+ * @return false on failure
+ */
+bool downstream_init(void);
 
-LOG_MODULE_REGISTER(main);
+/**
+ * @brief Callback for a scanned device
+ * @param [in] address of device scanned
+ * @param [in] name of device scanned or NULL if no name
+ * @param [in] rssi of scan response
+ */
+typedef void (*downstream_device)(const bt_addr_le_t *address,
+                                  const char* name, int rssi);
 
-int main(void)
-{
-    LOG_INF("HID Bridge built "__TIME__" "__DATE__);
-    if (!downstream_init())
-    {
-        LOG_ERR("downstream_init() fail");
-    }
-    else if (!prompt_init())
-    {
-        LOG_ERR("prompt_init() fail");
-    }
-    else if (!upstream_init())
-    {
-        LOG_ERR("upstream_init() fail");
-    }
-    else
-    {
-        LOG_INF("Running");
-    }
-    return 0;
-}
-
+/**
+ * @brief Start/Stop scanning for connectable devices
+ * @param callback on scan or NULL to stop scanning
+ * @return previous callback or NULL if none
+ */
+downstream_device downstream_scan(downstream_device callback);
