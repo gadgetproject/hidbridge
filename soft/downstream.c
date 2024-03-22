@@ -15,8 +15,11 @@
  */
 
 #include "downstream.h"
+
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/uuid.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
 
@@ -47,11 +50,60 @@ static void downstream_found(const bt_addr_le_t *addr, int8_t rssi,
         return;
     }
 
+    /* Parse the advertisement */
+    struct extract_info
+    {
+        bool is_hid;
+        char name[31];
+    } info;
+    bool extract_info(struct bt_data *data, void *user_data)
+    {
+        struct extract_info *info = user_data;
+        size_t length = data->data_len;
+
+        switch (data->type)
+        {
+        case BT_DATA_UUID16_SOME:
+        case BT_DATA_UUID16_ALL:
+            for (unsigned i=0; i+1 < data->data_len; i+=2)
+            {
+                if (sys_get_le16(&data->data[i]) == BT_UUID_HIDS_VAL)
+                {
+                    info->is_hid = true;
+                }
+            }
+            break;
+        case BT_DATA_NAME_SHORTENED:
+        case BT_DATA_NAME_COMPLETE:
+            /* Unlikely name will be this long */
+            if (length >= sizeof(info->name))
+                length = sizeof(info->name)-1;
+            /* Copy name and terminate */
+            (void)memcpy(info->name, data->data, length);
+            info->name[length] = '\0';
+            break;
+        default:
+            break;
+        }
+        /* Continue search */
+        return true;
+    }
+    info.is_hid = false;
+    info.name[0] = '\0';
+    /* Note this call destroys the buffer */
+    (void)bt_data_parse(ad, extract_info, &info);
+    if (!info.is_hid)
+    {
+        LOG_DBG("downstrean_found '%s' filtered", addr_str);
+        return;
+    }
+
+    /* Inform upper layer */
     downstream_device scanner = downstream_scanner;
     if (scanner)
     {
         LOG_DBG("downstream_found '%s'", addr_str);
-        scanner(addr, addr_str, rssi);
+        scanner(addr, info.name[0] ? info.name : NULL, rssi);
     }
     else
     {
@@ -100,7 +152,9 @@ static int cmd_scan(const struct shell *sh, size_t argc, char **argv)
     the_shell = sh;
     void found(const bt_addr_le_t *address, const char* name, int rssi)
     {
-        shell_print(the_shell, "SCAN: '%s' %d", name, rssi);
+        char address_string[BT_ADDR_LE_STR_LEN];
+        bt_addr_le_to_str(address, address_string, sizeof(address_string));
+        shell_print(the_shell, "SCAN: '%s' %s %d", name, address_string, rssi);
     }
     downstream_device previous = downstream_scan(found);
     k_sleep(K_SECONDS(10));
