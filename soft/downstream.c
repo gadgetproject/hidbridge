@@ -17,6 +17,7 @@
 #include "downstream.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
@@ -37,16 +38,20 @@ bool downstream_init(void)
     return !err;
 }
 
-static void downstream_found(const bt_addr_le_t *addr, int8_t rssi,
-                             uint8_t type, struct net_buf_simple *ad)
+/**
+ * @brief Callback from BLE stack when a device is scanned
+ */
+static void downstream_scanned_cb(const bt_addr_le_t *address, int8_t rssi,
+                                  uint8_t type, struct net_buf_simple *ad)
 {
+    /* For debug logging */
     char addr_str[BT_ADDR_LE_STR_LEN];
-    bt_addr_le_to_str(addr, addr_str, sizeof(addr_str));
+    bt_addr_le_to_str(address, addr_str, sizeof(addr_str));
 
     /* We're only interested in connectable events */
     if (type != BT_GAP_ADV_TYPE_ADV_IND)
     {
-        LOG_DBG("downstream_found '%s' rejected %d", addr_str, type);
+        LOG_DBG("downstream_scanned_cb '%s' rejected %d", addr_str, type);
         return;
     }
 
@@ -102,12 +107,12 @@ static void downstream_found(const bt_addr_le_t *addr, int8_t rssi,
     downstream_device scanner = downstream_scanner;
     if (scanner)
     {
-        LOG_DBG("downstream_found '%s'", addr_str);
-        scanner(addr, info.name[0] ? info.name : NULL, rssi);
+        LOG_DBG("downstream_scanned_cb '%s'", addr_str);
+        scanner(address, info.name[0] ? info.name : NULL, rssi);
     }
     else
     {
-        LOG_WRN("downstream_found '%s' discarded", addr_str);
+        LOG_WRN("downstream_scanned_cb '%s' discarded", addr_str);
     }
 }
 
@@ -121,7 +126,7 @@ downstream_device downstream_scan(downstream_device callback)
         /* Start scanning? */
         if (!previous_scanner)
         {
-            int err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, downstream_found);
+            int err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, downstream_scanned_cb);
             if (err) {
                 LOG_ERR("bt_le_scan_start %d", err);
             }
@@ -142,12 +147,115 @@ downstream_device downstream_scan(downstream_device callback)
     return previous_scanner;
 }
 
+/**
+ * @brief Events signal BLE state changes
+ */
+K_EVENT_DEFINE(downstream_events);
+enum
+{
+    DOWNSTREAM_EVENT_CONNECTED = 1u<<0,
+    DOWNSTREAM_EVENT_DISCONNECTED = 1u<<1,
+};
+
+/**
+ * @brief The current BLE connection or NULL if disconnected
+ */
+static struct bt_conn *downstream_conn;
+
+/**
+ * @brief Callback from BLE stack when a device connection attempt succeeds or fails
+ */
+static void downstream_connected_cb(struct bt_conn *conn, uint8_t conn_err)
+{
+    /* For debug logging */
+    char addr_str[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr_str, sizeof(addr_str));
+
+    if (conn_err)
+    {
+        bt_conn_unref(downstream_conn);
+        downstream_conn = NULL;
+        LOG_WRN("%s connect failed %d", addr_str, conn_err);
+        (void)k_event_set(&downstream_events, DOWNSTREAM_EVENT_DISCONNECTED);
+        return;
+    }
+
+    LOG_INF("%s connected", addr_str);
+    (void)k_event_set(&downstream_events, DOWNSTREAM_EVENT_CONNECTED);
+
+    /* TODO */
+    bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+}
+
+/**
+ * @brief Callback from BLE stack when a device connection is dropped
+ */
+static void downstream_disconnected_cb(struct bt_conn *conn, uint8_t reason)
+{
+    /* For debug logging */
+    char addr_str[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr_str, sizeof(addr_str));
+
+    bt_conn_unref(downstream_conn);
+    downstream_conn = NULL;
+    LOG_INF("%s disconnected %d", addr_str, reason);
+    (void)k_event_set(&downstream_events, DOWNSTREAM_EVENT_DISCONNECTED);
+}
+
+BT_CONN_CB_DEFINE(downstream_conn_callbacks) = {
+    .connected = downstream_connected_cb,
+    .disconnected = downstream_disconnected_cb,
+};
+
+bool downstream_connect(const bt_addr_le_t *address, downstream_connected callback)
+{
+    /* TODO: bond */
+    if (!address)
+    {
+        LOG_ERR("fixme: downstream_connect(NULL)");
+        return false;
+    }
+
+    /* TODO: disconnect */
+    if (downstream_conn)
+    {
+        LOG_ERR("fixme: downstream_conn != NULL");
+        return false;
+    }
+
+    /* Initiate wait-for-connect */
+    (void)k_event_set(&downstream_events, 0);
+    int err = bt_conn_le_create(address,
+                                BT_CONN_LE_CREATE_CONN,
+                                BT_LE_CONN_PARAM_DEFAULT,
+                                &downstream_conn);
+    if (err)
+    {
+        LOG_ERR("downstream_connect failed %d\n", err);
+        return false;
+    }
+
+    /* Wait for callback */
+    uint32_t events = k_event_wait(&downstream_events,
+                                   DOWNSTREAM_EVENT_CONNECTED|DOWNSTREAM_EVENT_DISCONNECTED,
+                                   false, K_FOREVER);
+    if (events & DOWNSTREAM_EVENT_DISCONNECTED)
+    {
+        /* Connection failed */
+        return false;
+    }
+
+    /* TODO: security, discovery */
+    callback();
+
+    return true;
+}
+
 static int cmd_scan(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
     static const struct shell *the_shell;
-
 
     the_shell = sh;
     void found(const bt_addr_le_t *address, const char* name, int rssi)
@@ -163,4 +271,37 @@ static int cmd_scan(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_connect(const struct shell *sh, size_t argc, char **argv)
+{
+    static const struct shell *the_shell;
+
+    if (argc < 2) {
+        shell_error(sh, "usage: %s [public|random] UU:VV:WW:XX:YY:ZZ", argv[0]);
+        return -1;
+    }
+    const char* type = (argc < 3) ? "public" : argv[1];
+    const char* addr = (argc < 3) ? argv[1] : argv[2];
+
+    bt_addr_le_t peer;
+    int err = bt_addr_le_from_str(addr, type, &peer);
+    if (err)
+    {
+        shell_error(sh, "Invalid peer address '%s %s' (err %d)", type, addr, err);
+        return err;
+    }
+
+    the_shell = sh;
+    void connected(void)
+    {
+        shell_print(the_shell, "CONNECTED");
+    }
+    if (!downstream_connect(&peer, connected))
+    {
+        shell_print(the_shell, "FAILED");
+    }
+
+    return 0;
+}
+
 SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for devices", cmd_scan, 0, 0);
+SHELL_CMD_ARG_REGISTER(connect, NULL, "Connect device", cmd_connect, 1, 2);

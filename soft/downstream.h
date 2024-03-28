@@ -35,5 +35,19 @@ typedef void (*downstream_device)(const bt_addr_le_t *address,
  * @brief Start/Stop scanning for connectable devices
  * @param callback on scan or NULL to stop scanning
  * @return previous callback or NULL if none
+ * @note this function returns immediately and callback() is called from another thread
  */
 downstream_device downstream_scan(downstream_device callback);
+
+/**
+ * @brief Callback for a connected device
+ */
+typedef void (*downstream_connected)(void);
+
+/**
+ * @brief Connect to device
+ * @param address of scanned device or NULL to use bonded device
+ * @param callback called when connected
+ * @return false if connection fails otherwise callback() called before returning true
+ */
+bool downstream_connect(const bt_addr_le_t *address, downstream_connected callback);
