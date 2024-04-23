@@ -17,3 +17,12 @@
 4. Fetch subordinate repos <br>`west update`
 5. Build the software <br>`west build -b nrf52840dk_nrf52840 gp/soft`
 6. Flash the software <br>`west flash`
+
+## Test Platform
+
+1. Using a second Nordin board (I have PCA10040) <br>`west build -b nrf52840dk_nrf52840 nrf/samples/bluetooth/peripheral_hids_keyboard`
+2. Flash the software <br>`west flash`
+3. Button 4 starts advertising; LED 1 flashes.
+4. On **hidbridge** board, `scan` and `connect`.
+5. Connects, displays passkey and bonds; LED 1 stops flashing, LED 2 lit.
+6. Button 1 sends one keystroke in sequence `hello\\n`

@@ -15,6 +15,7 @@
  */
 
 #include "downstream.h"
+#include "prompt.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
@@ -183,8 +184,88 @@ static void downstream_connected_cb(struct bt_conn *conn, uint8_t conn_err)
     LOG_INF("%s connected", addr_str);
     (void)k_event_set(&downstream_events, DOWNSTREAM_EVENT_CONNECTED);
 
+    int err = bt_conn_set_security(conn, BT_SECURITY_L2);
+    if (err && err != -EBUSY)
+    {
+        LOG_ERR("%s bond failed %d", addr_str, err);
+        (void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    }
+}
+
+static void downstream_passkey_display_cb(struct bt_conn *conn, unsigned int passkey)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Passkey advised for %s: %06u", addr, passkey);
+
+    /* Display passkey prompt */
+    prompt_message(PROMPT_PASSKEY, passkey);
+}
+static void downstream_passkey_confirm_cb(struct bt_conn *conn, unsigned int passkey)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Passkey accepted for %s: %06u", addr, passkey);
+
+    /* Display passkey prompt */
+    prompt_message(PROMPT_PASSKEY, passkey);
+
+    bt_conn_auth_passkey_confirm(conn);
+}
+static void downstream_pairing_cancel_cb(struct bt_conn *conn)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_WRN("Pairing cancelled: %s", addr);
+
+    /* Clear passkey prompt */
+    prompt_message(NULL);
+}
+static void downstream_pairing_complete_cb(struct bt_conn *conn, bool bonded)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Pairing completed: %s, bonded: %d", addr, bonded);
+
+    /* Clear passkey prompt */
+    prompt_message(NULL);
+}
+static void downstream_pairing_failed_cb(struct bt_conn *conn, enum bt_security_err reason)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_WRN("Pairing failed conn: %s, reason %d", addr, reason);
+
+    /* Clear passkey prompt */
+    prompt_message(NULL);
+}
+
+static struct bt_conn_auth_cb downstream_passkey_callbacks = {
+    .passkey_display = downstream_passkey_display_cb,
+    .passkey_confirm = downstream_passkey_confirm_cb,
+    .cancel = downstream_pairing_cancel_cb,
+};
+static struct bt_conn_auth_info_cb downstream_pairing_callbacks = {
+    .pairing_complete = downstream_pairing_complete_cb,
+    .pairing_failed = downstream_pairing_failed_cb
+};
+
+static void downstream_encrypted_cb(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
+{
+    /* For debug logging */
+    char addr_str[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr_str, sizeof(addr_str));
+
+    if (err)
+    {
+        LOG_ERR("%s failed to encrypt level %d err %d", addr_str, level, err);
+        (void)bt_conn_disconnect(conn, err);
+        return;
+    }
+    LOG_INF("%s encrypted level %d", addr_str, level);
+
     /* TODO */
-    bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    (void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
 }
 
 /**
@@ -205,6 +286,7 @@ static void downstream_disconnected_cb(struct bt_conn *conn, uint8_t reason)
 BT_CONN_CB_DEFINE(downstream_conn_callbacks) = {
     .connected = downstream_connected_cb,
     .disconnected = downstream_disconnected_cb,
+    .security_changed = downstream_encrypted_cb,
 };
 
 bool downstream_connect(const bt_addr_le_t *address, downstream_connected callback)
@@ -222,6 +304,10 @@ bool downstream_connect(const bt_addr_le_t *address, downstream_connected callba
         LOG_ERR("fixme: downstream_conn != NULL");
         return false;
     }
+
+    /* Set security callbacks */
+    (void)bt_conn_auth_cb_register(&downstream_passkey_callbacks);
+    (void)bt_conn_auth_info_cb_register(&downstream_pairing_callbacks);
 
     /* Initiate wait-for-connect */
     (void)k_event_set(&downstream_events, 0);

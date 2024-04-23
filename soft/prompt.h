@@ -16,6 +16,8 @@
 
 #include <stdbool.h>
 
+#define PROMPT_PASSKEY "HIDBRIDGE: type %d on your keyboard"
+
 /**
  * @brief Initialise user prompt subsystem
  * @return false on failure
