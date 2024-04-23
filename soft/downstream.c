@@ -291,11 +291,32 @@ BT_CONN_CB_DEFINE(downstream_conn_callbacks) = {
 
 bool downstream_connect(const bt_addr_le_t *address, downstream_connected callback)
 {
-    /* TODO: bond */
+    /* Reconnect to bonded device? */
+    bt_addr_le_t bond_address;
     if (!address)
     {
-        LOG_ERR("fixme: downstream_connect(NULL)");
-        return false;
+        void get_bond_address(const struct bt_bond_info *info, void *user_data)
+        {
+            char addr_str[BT_ADDR_LE_STR_LEN];
+            bt_addr_le_to_str(&info->addr, addr_str, BT_ADDR_LE_STR_LEN);
+            LOG_INF("%s bonded", addr_str);
+
+            (*(bt_addr_le_t *)user_data) = info->addr;
+        }
+
+        bt_addr_le_copy(&bond_address, BT_ADDR_LE_NONE);
+        bt_foreach_bond(BT_ID_DEFAULT, get_bond_address, &bond_address);
+        if (bt_addr_le_eq(&bond_address, BT_ADDR_LE_NONE))
+        {
+            LOG_ERR("downstream_connect not bonded");
+            return false;
+        }
+        address = &bond_address;
+    }
+    else
+    {
+        /* Remove any bonds */
+        (void)bt_unpair(BT_ID_DEFAULT, NULL);
     }
 
     /* TODO: disconnect */
@@ -337,7 +358,10 @@ bool downstream_connect(const bt_addr_le_t *address, downstream_connected callba
     return true;
 }
 
-static int cmd_scan(const struct shell *sh, size_t argc, char **argv)
+/**************************************************************************/
+#ifdef CONFIG_SHELL
+
+static int downstream_cmd_scan(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
@@ -357,7 +381,7 @@ static int cmd_scan(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
-static int cmd_connect(const struct shell *sh, size_t argc, char **argv)
+static int downstream_cmd_connect(const struct shell *sh, size_t argc, char **argv)
 {
     static const struct shell *the_shell;
 
@@ -389,5 +413,109 @@ static int cmd_connect(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
-SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for devices", cmd_scan, 0, 0);
-SHELL_CMD_ARG_REGISTER(connect, NULL, "Connect device", cmd_connect, 1, 2);
+static int downstream_cmd_reconnect(const struct shell *sh, size_t argc, char **argv)
+{
+    static const struct shell *the_shell;
+
+    the_shell = sh;
+    void reconnected(void)
+    {
+        shell_print(the_shell, "RECONNECTED");
+    }
+    if (!downstream_connect(NULL, reconnected))
+    {
+        shell_print(the_shell, "FAILED");
+    }
+
+    return 0;
+}
+
+static int downstream_cmd_bdaddr(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    bt_addr_le_t addr = {0};
+    size_t one = 1;
+    bt_id_get(&addr, &one);
+    if (one) {
+        char dev[BT_ADDR_LE_STR_LEN];
+        (void)bt_addr_le_to_str(&addr, dev, BT_ADDR_LE_STR_LEN);
+        shell_print(sh, "%s", dev);
+    }
+    return 0;
+}
+
+/* TODO: Remove when key manager exported in zephyr/bluetooth */
+#include <../subsys/bluetooth/host/keys.h>
+
+static int downstream_cmd_keys(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    void dump(struct bt_keys *key, void *data)
+    {
+        const struct shell* sh = data;
+
+        char bdaddr[BT_ADDR_LE_STR_LEN];
+        (void)bt_addr_le_to_str(&key->addr, bdaddr, BT_ADDR_LE_STR_LEN);
+        shell_print(sh, "%d:\t%s", key->id, bdaddr);
+        shell_print(sh, "\tenc_size: %d flags: 0x%x keys: 0x%x", key->enc_size, key->flags, key->keys);
+        shell_print(sh, "\tLTK: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                        key->ltk.val[0], key->ltk.val[1], key->ltk.val[2], key->ltk.val[3],
+                        key->ltk.val[4], key->ltk.val[5], key->ltk.val[6], key->ltk.val[7],
+                        key->ltk.val[8], key->ltk.val[9], key->ltk.val[10], key->ltk.val[11],
+                        key->ltk.val[12], key->ltk.val[13], key->ltk.val[14], key->ltk.val[15]);
+    }
+
+    bt_keys_foreach_type(BT_KEYS_ALL, dump, (void*)sh);
+
+    return 0;
+}
+
+static int downstream_cmd_keys_clear(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    int err = bt_unpair(BT_ID_DEFAULT, NULL);
+    if (err) {
+        shell_error(sh, "bt_unpair: %d", err);
+    } else {
+        shell_print(sh, "ok");
+    }
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(downstream_keys_cmds,
+    SHELL_CMD_ARG(clear, NULL,
+              "Clear bluetooth keys",
+              downstream_cmd_keys_clear, 0, 0),
+    SHELL_SUBCMD_SET_END
+);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(downstream_cmds,
+    SHELL_CMD_ARG(scan, NULL,
+              "Scan for bluetooth keyboards",
+              downstream_cmd_scan, 0, 0),
+    SHELL_CMD_ARG(connect, NULL,
+              "Connect bluetooth keyboard",
+              downstream_cmd_connect, 1, 2),
+    SHELL_CMD_ARG(reconnect, NULL,
+              "Reconnect bluetooth keyboard",
+              downstream_cmd_reconnect, 0, 0),
+    SHELL_CMD_ARG(bdaddr, NULL,
+              "Get bluetooth address",
+              downstream_cmd_bdaddr, 0, 0),
+    SHELL_CMD_ARG(keys, &downstream_keys_cmds,
+              "Get/Clear bluetooth keys",
+              downstream_cmd_keys, 0, 0),
+    SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_ARG_REGISTER(downstream, &downstream_cmds,
+               "Bluetooth client shell commands",
+               NULL, 0, 0);
+
+#endif /* CONFIG_SHELL */
