@@ -125,6 +125,7 @@ void prompt_message(const char* msg, ...)
     /* Terminate message */
     prompt.text[written] = '\0';
     LOG_INF("Prompt: delete %u emit '%s'/%u", prompt.backspace, prompt.text, prompt.length);
+    printk("PROMPT: '%s'\n", prompt.text);
 
     /* Start typing */
     k_work_schedule(&prompt.work, PROMPT_KEY_PERIOD);

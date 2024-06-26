@@ -20,10 +20,12 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
+#include <zephyr/bluetooth/gatt.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>    // LOG_PROCESS()
 
 LOG_MODULE_REGISTER(downstream);
 
@@ -156,7 +158,40 @@ enum
 {
     DOWNSTREAM_EVENT_CONNECTED = 1u<<0,
     DOWNSTREAM_EVENT_DISCONNECTED = 1u<<1,
+    DOWNSTREAM_EVENT_ENCRYPTED = 1u<<2,
+    DOWNSTREAM_EVENT_DISCOVERED = 1u<<3,
 };
+
+/**
+ * @brief Wait for one of a set of events to occur
+ * @param [in] events bitmap of events to wait on
+ * @return bitmap of signalled events
+ */
+static uint32_t downstream_wait(uint32_t events)
+{
+    const unsigned timeout_ms = 30000;
+    const unsigned poll_ms = 100;
+    for(unsigned ms = 0; ms < timeout_ms; ms += poll_ms)
+    {
+        /* Flush the log */
+        while(LOG_PROCESS());
+
+        /* Wait a bit for an event, adding disconnected */
+        uint32_t signalled = k_event_wait(&downstream_events,
+                                          events | DOWNSTREAM_EVENT_DISCONNECTED,
+                                          false, K_MSEC(poll_ms));
+
+        /* Anything happened? */
+        if (signalled)
+        {
+            return signalled & events;
+        }
+    }
+
+    /* Timeout */
+    LOG_WRN("downstream_wait() timeout");
+    return 0;
+}
 
 /**
  * @brief The current BLE connection or NULL if disconnected
@@ -183,13 +218,6 @@ static void downstream_connected_cb(struct bt_conn *conn, uint8_t conn_err)
 
     LOG_INF("%s connected", addr_str);
     (void)k_event_set(&downstream_events, DOWNSTREAM_EVENT_CONNECTED);
-
-    int err = bt_conn_set_security(conn, BT_SECURITY_L2);
-    if (err && err != -EBUSY)
-    {
-        LOG_ERR("%s bond failed %d", addr_str, err);
-        (void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-    }
 }
 
 static void downstream_passkey_display_cb(struct bt_conn *conn, unsigned int passkey)
@@ -264,8 +292,7 @@ static void downstream_encrypted_cb(struct bt_conn *conn, bt_security_t level, e
     }
     LOG_INF("%s encrypted level %d", addr_str, level);
 
-    /* TODO */
-    (void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    (void)k_event_set(&downstream_events, DOWNSTREAM_EVENT_ENCRYPTED);
 }
 
 /**
@@ -289,8 +316,162 @@ BT_CONN_CB_DEFINE(downstream_conn_callbacks) = {
     .security_changed = downstream_encrypted_cb,
 };
 
+/**
+ * @brief Handles discovered
+ */
+static struct {
+    struct
+    {
+        uint16_t handle;
+        struct bt_gatt_subscribe_params sub_params;
+        struct bt_gatt_discover_params sub_disc_params;
+    } boot_in;
+    struct
+    {
+        uint16_t handle;
+        struct bt_gatt_subscribe_params sub_params;
+        struct bt_gatt_discover_params sub_disc_params;
+    } report[10];
+} downstream_handles;
+
+/**
+ * @brief bt_gatt_subscribe() callback
+ * @param conn
+ * @param params
+ * @param data
+ * @param length
+ * @return
+ */
+static uint8_t downstream_notify_cb(struct bt_conn *conn,
+                                    struct bt_gatt_subscribe_params *params,
+                                    const void *data, uint16_t length)
+{
+    const char* value = NULL;
+    if (params->value_handle == downstream_handles.boot_in.handle)
+    {
+        value = "BOOT_IN";
+        /* TODO - handle keypress */
+    }
+    else for (unsigned i = 0; i < ARRAY_SIZE(downstream_handles.report); i++)
+    {
+        if (params->value_handle == downstream_handles.report[i].handle)
+        {
+            value = "REPORT";
+            /* TODO - handle keypress */
+        }
+    }
+    if (!value)
+    {
+        LOG_WRN("unexpected handle 0x%04X", params->value_handle);
+        value = "?unexpected?";
+    }
+
+    LOG_HEXDUMP_INF(data, length, value);
+
+    return BT_GATT_ITER_CONTINUE;
+}
+
+/**
+ * @brief bt_gatt_discover() callback
+ * @param conn
+ * @param attr
+ * @param params
+ * @return
+ */
+static uint8_t downstream_discover_cb(struct bt_conn *conn,
+                                      const struct bt_gatt_attr *attr,
+                                      struct bt_gatt_discover_params *params)
+{
+    /* Discovered something? */
+    if (attr)
+    {
+        LOG_INF("downstream attribute type %d handle 0x%04X", params->type, attr->handle);
+
+        if (params->type == BT_GATT_DISCOVER_CHARACTERISTIC) {
+            struct bt_gatt_chrc *chrc = attr->user_data;
+            struct bt_gatt_subscribe_params *sub_params = NULL;
+
+            char uuid_str[37];
+            bt_uuid_to_str(chrc->uuid, uuid_str, sizeof(uuid_str));
+
+            if (bt_uuid_cmp(chrc->uuid, BT_UUID_HIDS_REPORT) == 0)
+            {
+                LOG_INF("%s: REPORT", uuid_str);
+                for (unsigned i = 0; i < ARRAY_SIZE(downstream_handles.report); i++)
+                {
+                    if (!downstream_handles.report[i].handle)
+                    {
+                        downstream_handles.report[i].handle = chrc->value_handle;
+                        sub_params = &downstream_handles.report[i].sub_params;
+                        sub_params->disc_params = &downstream_handles.report[i].sub_disc_params;
+                        break;
+                    }
+                }
+                if (!sub_params)
+                {
+                    LOG_WRN("report slots exhausted");
+                }
+            }
+            else if (bt_uuid_cmp(chrc->uuid, BT_UUID_HIDS_BOOT_KB_IN_REPORT) == 0)
+            {
+                LOG_INF("%s: BOOT_IN", uuid_str);
+                downstream_handles.boot_in.handle = chrc->value_handle;
+                sub_params = &downstream_handles.boot_in.sub_params;
+                sub_params->disc_params = &downstream_handles.boot_in.sub_disc_params;
+            }
+            else
+            {
+                LOG_INF("%s: ignored", uuid_str);
+            }
+
+            /* Subscribe? */
+            if (sub_params != NULL)
+            {
+                sub_params->value = BT_GATT_CCC_NOTIFY;
+                sub_params->value_handle = chrc->value_handle;
+                sub_params->ccc_handle = 0;
+                sub_params->end_handle = params->end_handle;
+                sub_params->notify = downstream_notify_cb;
+                int err = bt_gatt_subscribe(conn, sub_params);
+                if (err)
+                {
+                    LOG_WRN("subscribe 0x%04X %d", chrc->value_handle, err);
+                }
+            }
+
+            return BT_GATT_ITER_CONTINUE;
+        }
+    }
+
+    /* TODO: check mandatory characteristics */
+
+    (void)k_event_set(&downstream_events, DOWNSTREAM_EVENT_DISCOVERED);
+    return BT_GATT_ITER_STOP;
+}
+
 bool downstream_connect(const bt_addr_le_t *address, downstream_connected callback)
 {
+    /* Disconnect? */
+    if (downstream_conn)
+    {
+        (void)bt_conn_disconnect(downstream_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        (void)downstream_wait(DOWNSTREAM_EVENT_DISCONNECTED);
+    }
+    (void)k_event_set(&downstream_events, 0);
+
+    /* Just disconnect? */
+    if (!callback)
+    {
+        if (address)
+        {
+            char addr_str[BT_ADDR_LE_STR_LEN];
+            bt_addr_le_to_str(address, addr_str, sizeof(addr_str));
+            LOG_ERR("downstream_connect(%s, NULL)", addr_str);
+            return false;
+        }
+        return true;
+    }
+
     /* Reconnect to bonded device? */
     bt_addr_le_t bond_address;
     if (!address)
@@ -298,7 +479,7 @@ bool downstream_connect(const bt_addr_le_t *address, downstream_connected callba
         void get_bond_address(const struct bt_bond_info *info, void *user_data)
         {
             char addr_str[BT_ADDR_LE_STR_LEN];
-            bt_addr_le_to_str(&info->addr, addr_str, BT_ADDR_LE_STR_LEN);
+            bt_addr_le_to_str(&info->addr, addr_str, sizeof(addr_str));
             LOG_INF("%s bonded", addr_str);
 
             (*(bt_addr_le_t *)user_data) = info->addr;
@@ -319,40 +500,64 @@ bool downstream_connect(const bt_addr_le_t *address, downstream_connected callba
         (void)bt_unpair(BT_ID_DEFAULT, NULL);
     }
 
-    /* TODO: disconnect */
-    if (downstream_conn)
-    {
-        LOG_ERR("fixme: downstream_conn != NULL");
-        return false;
-    }
-
-    /* Set security callbacks */
-    (void)bt_conn_auth_cb_register(&downstream_passkey_callbacks);
-    (void)bt_conn_auth_info_cb_register(&downstream_pairing_callbacks);
-
-    /* Initiate wait-for-connect */
-    (void)k_event_set(&downstream_events, 0);
+    /* Initiate connection */
     int err = bt_conn_le_create(address,
                                 BT_CONN_LE_CREATE_CONN,
                                 BT_LE_CONN_PARAM_DEFAULT,
                                 &downstream_conn);
     if (err)
     {
-        LOG_ERR("downstream_connect failed %d\n", err);
+        LOG_ERR("downstream_connect connect failed %d\n", err);
         return false;
     }
 
-    /* Wait for callback */
-    uint32_t events = k_event_wait(&downstream_events,
-                                   DOWNSTREAM_EVENT_CONNECTED|DOWNSTREAM_EVENT_DISCONNECTED,
-                                   false, K_FOREVER);
-    if (events & DOWNSTREAM_EVENT_DISCONNECTED)
+    /* Wait for connect */
+    if (!downstream_wait(DOWNSTREAM_EVENT_CONNECTED))
     {
         /* Connection failed */
         return false;
     }
 
-    /* TODO: security, discovery */
+    /* Initiate encryption */
+    (void)bt_conn_auth_cb_register(&downstream_passkey_callbacks);
+    (void)bt_conn_auth_info_cb_register(&downstream_pairing_callbacks);
+    err = bt_conn_set_security(downstream_conn, BT_SECURITY_L2);
+    if (err && err != -EBUSY)
+    {
+        LOG_ERR("downstream_connect security failed %d\n", err);
+        (void)bt_conn_disconnect(downstream_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    }
+
+    /* Wait for encryption */
+    if (!downstream_wait(DOWNSTREAM_EVENT_ENCRYPTED))
+    {
+        /* Bonding failed */
+        return false;
+    }
+
+    /* Initiate discovery */
+    struct bt_gatt_discover_params discover_params =
+    {
+        .func = downstream_discover_cb,
+        .type = BT_GATT_DISCOVER_CHARACTERISTIC,
+        .start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE,
+        .end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE,
+    };
+
+    err = bt_gatt_discover(downstream_conn, &discover_params);
+    if (err)
+    {
+        LOG_ERR("downstream_connect discover failed %d\n", err);
+        (void)bt_conn_disconnect(downstream_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    }
+
+    /* Wait for discovery */
+    if (!downstream_wait(DOWNSTREAM_EVENT_DISCOVERED))
+    {
+        /* Discovery failed */
+        return false;
+    }
+
     callback();
 
     return true;
@@ -407,7 +612,19 @@ static int downstream_cmd_connect(const struct shell *sh, size_t argc, char **ar
     }
     if (!downstream_connect(&peer, connected))
     {
-        shell_print(the_shell, "FAILED");
+        shell_error(the_shell, "FAILED");
+    }
+
+    return 0;
+}
+
+static int downstream_cmd_disconnect(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    if (!downstream_connect(NULL, NULL))
+    {
+        shell_error(sh, "FAILED");
     }
 
     return 0;
@@ -415,6 +632,8 @@ static int downstream_cmd_connect(const struct shell *sh, size_t argc, char **ar
 
 static int downstream_cmd_reconnect(const struct shell *sh, size_t argc, char **argv)
 {
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
     static const struct shell *the_shell;
 
     the_shell = sh;
@@ -424,7 +643,7 @@ static int downstream_cmd_reconnect(const struct shell *sh, size_t argc, char **
     }
     if (!downstream_connect(NULL, reconnected))
     {
-        shell_print(the_shell, "FAILED");
+        shell_error(the_shell, "FAILED");
     }
 
     return 0;
@@ -502,6 +721,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(downstream_cmds,
     SHELL_CMD_ARG(connect, NULL,
               "Connect bluetooth keyboard",
               downstream_cmd_connect, 1, 2),
+    SHELL_CMD_ARG(disconnect, NULL,
+              "Disconnect bluetooth keyboard",
+              downstream_cmd_disconnect, 0, 0),
     SHELL_CMD_ARG(reconnect, NULL,
               "Reconnect bluetooth keyboard",
               downstream_cmd_reconnect, 0, 0),

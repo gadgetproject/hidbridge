@@ -47,7 +47,7 @@ typedef void (*downstream_connected)(void);
 /**
  * @brief Connect to device
  * @param address of scanned device or NULL to use bonded device
- * @param callback called when connected
+ * @param callback called when connected or NULL to disconnect
  * @return false if connection fails otherwise callback() called before returning true
  */
 bool downstream_connect(const bt_addr_le_t *address, downstream_connected callback);
